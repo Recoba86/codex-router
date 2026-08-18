@@ -63,6 +63,7 @@ import {
   repairToolSchemaRoots,
 } from "./namespace-relay.mjs";
 import { collaborationToolAvailable, pendingInterruptTargets } from "./subagent-completion.mjs";
+import { resolveEffectiveRequestProfile } from "./compatibility-profiles.mjs";
 import {
   FAILOVER_BUDGET_MS,
   MAX_FAILOVER_HOPS,
@@ -494,8 +495,9 @@ function routedHeaders() {
 // tool choices therefore has to be normalized here, before that translation
 // can cause the upstream model to emit an invalid forced call.
 function normalizeAutoToolChoice(payload, route) {
+  const profile = resolveEffectiveRequestProfile(route);
   if (
-    ["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(route.requestProfile) &&
+    ["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(profile) &&
     payload.tool_choice !== undefined &&
     payload.tool_choice !== "none"
   ) {

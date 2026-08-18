@@ -522,6 +522,24 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has an invalid requestProfile`;
   }
   if (
+    model.compatibilityProfile !== undefined &&
+    typeof model.compatibilityProfile !== "string"
+  ) {
+    return `model ${model.slug} has an invalid compatibilityProfile`;
+  }
+  if (
+    model.compatibilityFamily !== undefined &&
+    typeof model.compatibilityFamily !== "string"
+  ) {
+    return `model ${model.slug} has an invalid compatibilityFamily`;
+  }
+  if (
+    model.compatFamily !== undefined &&
+    typeof model.compatFamily !== "string"
+  ) {
+    return `model ${model.slug} has an invalid compatFamily`;
+  }
+  if (
     model.multiAgentVersion !== undefined &&
     !["v1", "v2"].includes(model.multiAgentVersion)
   ) {
@@ -695,6 +713,21 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   return undefined;
 }
 
+function normalizeUserModelDefaults(model) {
+  if (!model || typeof model !== "object" || Array.isArray(model)) return model;
+  const contextWindow = model.contextWindow;
+  const autoCompact =
+    model.autoCompact !== undefined
+      ? model.autoCompact
+      : Number.isInteger(contextWindow) && contextWindow >= 1
+        ? Math.floor(contextWindow * 0.85)
+        : undefined;
+  return {
+    ...model,
+    ...(autoCompact !== undefined ? { autoCompact } : {}),
+  };
+}
+
 // User-curated models extend the checked-in registry. A broken entry (or a
 // collision after an upstream update ships the same model) must never take
 // the whole router down, so problems skip the entry and surface as warnings.
@@ -704,7 +737,8 @@ function mergeUserModels(base) {
   const slugs = new Set(models.map((model) => model.slug));
   const gatewayModels = new Set(models.map((model) => model.gatewayModel));
   const userModels = new Set();
-  for (const model of readUserModels()) {
+  for (const rawModel of readUserModels()) {
+    const model = normalizeUserModelDefaults(rawModel);
     const problem = modelProblem(model, base.providers, slugs, gatewayModels);
     if (problem) {
       warnings.push(`Skipped user model: ${problem}`);

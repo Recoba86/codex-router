@@ -36,6 +36,9 @@ const METADATA_FIELDS = new Set([
   "defaultReasoningSummary",
   "availabilityNux",
   "upgradeTo",
+  "compatibilityProfile",
+  "compatibilityFamily",
+  "compatFamily",
 ]);
 
 function gatewaySafe(value) {
