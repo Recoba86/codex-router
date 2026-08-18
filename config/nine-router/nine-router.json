@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "nine-router",
+      "displayName": "9Router",
+      "kind": "openai-compatible",
+      "ownedBy": "nine-router",
+      "baseUrl": "https://9router.witamin.tech/v1",
+      "baseUrlEnv": "NINEROUTER_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "NINEROUTER_API_KEY",
+          "NINE_ROUTER_API_KEY"
+        ],
+        "file": "nine-router-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-nine-router"
+        ],
+        "prompt": "9Router API key"
+      }
+    }
+  ]
+}

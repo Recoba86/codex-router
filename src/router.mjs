@@ -62,6 +62,7 @@ import {
   flattenToolSearchHistory,
   repairToolSchemaRoots,
 } from "./namespace-relay.mjs";
+import { defaultNineRouterProfile } from "./nine-router-resolver.mjs";
 import { collaborationToolAvailable, pendingInterruptTargets } from "./subagent-completion.mjs";
 import {
   FAILOVER_BUDGET_MS,
@@ -113,7 +114,18 @@ import {
   nativeToolResultAgingEnabled,
   toolResultAgingEnabled,
 } from "./tool-result-aging-state.mjs";
+import { execSync } from "node:child_process";
 import { VERSION } from "./version.mjs";
+
+let GIT_COMMIT = "unknown";
+try {
+  GIT_COMMIT = execSync("git rev-parse --short HEAD", {
+    cwd: new URL("..", import.meta.url),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+} catch {}
+
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 
@@ -494,8 +506,11 @@ function routedHeaders() {
 // tool choices therefore has to be normalized here, before that translation
 // can cause the upstream model to emit an invalid forced call.
 function normalizeAutoToolChoice(payload, route) {
+  const profile =
+    route?.requestProfile ||
+    (route?.provider === "nine-router" ? defaultNineRouterProfile(route.upstreamModel) : undefined);
   if (
-    ["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(route.requestProfile) &&
+    ["auto-tool-choice", "ollama-cloud-auto-tool-choice", "deepseek-thinking", "qwen-plan"].includes(profile) &&
     payload.tool_choice !== undefined &&
     payload.tool_choice !== "none"
   ) {
@@ -2080,6 +2095,8 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     delete routed.reasoning_effort;
   }
   if (provider?.id === "fireworks") delete routed.web_search_options;
+
+
   return {
     body: Buffer.from(JSON.stringify(routed), "utf8"),
     target: `${GATEWAY_BASE}/responses`,

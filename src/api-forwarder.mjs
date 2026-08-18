@@ -25,6 +25,8 @@ import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
 import { recordProviderCooldown } from "./model-failover.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import { stripImages, supportsImageInput } from "./vision-bridge.mjs";
+import { resolveNineRouterFamily, defaultNineRouterProfile } from "./nine-router-resolver.mjs";
+import { stripEncryptedSchemaKey, sanitizeNineRouterTools } from "./nine-router-tools-sanitizer.mjs";
 import {
   credentialLabel,
   credentialStatus,
@@ -40,8 +42,39 @@ import {
   recordCommandCodeRoute,
 } from "./commandcode-plan.mjs";
 import { relayCommandCodeGenerate } from "./commandcode-relay.mjs";
+import { execSync } from "node:child_process";
 import { VERSION } from "./version.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
+
+let GIT_COMMIT = "unknown";
+try {
+  GIT_COMMIT = execSync("git rev-parse --short HEAD", {
+    cwd: new URL("..", import.meta.url),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+} catch {}
+
+export function recursiveCountKey(obj, targetKey, paths = []) {
+  let count = 0;
+  function scan(current, path) {
+    if (!current || typeof current !== "object") return;
+    if (Array.isArray(current)) {
+      current.forEach((item, idx) => scan(item, `${path}[${idx}]`));
+      return;
+    }
+    for (const [key, value] of Object.entries(current)) {
+      const currentPath = path ? `${path}.${key}` : key;
+      if (key === targetKey) {
+        count++;
+        paths.push({ path: currentPath, key, value });
+      }
+      scan(value, currentPath);
+    }
+  }
+  scan(obj, "");
+  return { count, paths };
+}
 
 installStableFetchTransport();
 
@@ -254,8 +287,10 @@ function ensureToolResultsForCalls(messages) {
 // place of a real reasoning signature to skip thought-signature validation.
 const GEMINI_THOUGHT_SIGNATURE_SENTINEL = "skip_thought_signature_validator";
 
-function isGeminiProvider(provider) {
-  return provider?.id === "gemini-api" || provider?.ownedBy === "google";
+function isGeminiProvider(provider, model) {
+  if (provider?.id === "gemini-api" || provider?.ownedBy === "google") return true;
+  if (provider?.id === "nine-router" && resolveNineRouterFamily(model?.upstreamModel) === "google") return true;
+  return false;
 }
 
 // Both Command Code entries -- the chat-completions catalog and the Messages
@@ -327,10 +362,10 @@ function sanitizeGeminiImageContent(messages) {
   });
 }
 
-function sanitizeChatToolHistory(messages, provider) {
+function sanitizeChatToolHistory(messages, provider, model) {
   if (!Array.isArray(messages)) return messages;
   const repaired = ensureToolResultsForCalls(coalesceAssistantMessages(messages));
-  return isGeminiProvider(provider)
+  return isGeminiProvider(provider, model)
     ? ensureGeminiThoughtSignatures(sanitizeGeminiImageContent(repaired))
     : repaired;
 }
@@ -487,7 +522,7 @@ function normalizeBody(buffer, contentType, route) {
   // upstream reasoning translation attaches for Gemini 3.x thinking models.
   // Left in place the 400 surfaces as a misleading native-ChatGPT fallback
   // error rather than a routing failure, so strip them before forwarding.
-  if (isGeminiProvider(provider)) {
+  if (isGeminiProvider(provider, model)) {
     delete payload.web_search_options;
     delete payload.thinking;
     delete payload.think;
@@ -518,11 +553,14 @@ function normalizeBody(buffer, contentType, route) {
   // (github-copilot, opencode-go-responses), and neither has been observed to
   // refuse it. A caller that does send Meta a real `web_search_preview` tool
   // keeps the field, because that is the one tool this endpoint accepts it on.
+  if (provider.id === "nine-router" && Array.isArray(payload.tools)) {
+    payload.tools = sanitizeNineRouterTools(payload.tools);
+  }
   if (provider.id === "meta" && Array.isArray(payload.tools)) {
     payload.tools = stripSearchContentTypes(payload.tools);
   }
   if (Array.isArray(payload.messages)) {
-    payload.messages = sanitizeChatToolHistory(payload.messages, provider);
+    payload.messages = sanitizeChatToolHistory(payload.messages, provider, model);
   }
   if (provider.authProfile === "github-copilot") {
     // This is native ChatGPT account metadata, not an upstream scheduling
@@ -559,17 +597,21 @@ function normalizeBody(buffer, contentType, route) {
       );
     }
   }
-  if (model.requestProfile === "clinepass") {
+  const effectiveProfile =
+    model.requestProfile ||
+    (provider.id === "nine-router" ? defaultNineRouterProfile(model.upstreamModel) : undefined);
+
+  if (effectiveProfile === "clinepass") {
     delete payload.reasoning_effort;
     delete payload.thinking;
     delete payload.top_p;
-  } else if (model.requestProfile === "kimi-k3") {
+  } else if (effectiveProfile === "kimi-k3") {
     const effort = kimiK3Effort(payload.reasoning_effort);
     // Absent means the platform default (max); K3 rejects the thinking param.
     if (effort) payload.reasoning_effort = effort;
     else delete payload.reasoning_effort;
     delete payload.thinking;
-  } else if (model.requestProfile === "deepseek-thinking") {
+  } else if (effectiveProfile === "deepseek-thinking") {
     payload.thinking = { type: "enabled" };
     payload.reasoning_effort = deepSeekEffort(payload.reasoning_effort);
     delete payload.temperature;
@@ -584,11 +626,11 @@ function normalizeBody(buffer, contentType, route) {
     if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
       payload.tool_choice = "auto";
     }
-  } else if (model.requestProfile === "deepseek-nonthinking") {
+  } else if (effectiveProfile === "deepseek-nonthinking") {
     payload.thinking = { type: "disabled" };
     delete payload.reasoning_effort;
   } else if (
-    ["ollama-cloud", "ollama-cloud-auto-tool-choice"].includes(model.requestProfile)
+    ["ollama-cloud", "ollama-cloud-auto-tool-choice"].includes(effectiveProfile)
   ) {
     // Absent means the model's own default; Ollama enables thinking on capable
     // models when the parameter is omitted.
@@ -601,13 +643,13 @@ function normalizeBody(buffer, contentType, route) {
     // malformed arguments when Codex forces a particular tool. Preserve the
     // model-scoped exception on direct Chat Completions traffic too.
     if (
-      model.requestProfile === "ollama-cloud-auto-tool-choice" &&
+      effectiveProfile === "ollama-cloud-auto-tool-choice" &&
       payload.tool_choice !== undefined &&
       payload.tool_choice !== "none"
     ) {
       payload.tool_choice = "auto";
     }
-  } else if (model.requestProfile === "qwen-plan") {
+  } else if (effectiveProfile === "qwen-plan") {
     // DashScope documents reasoning_effort only for the cross-vendor
     // DeepSeek/GLM models it resells (high/max; low/medium collapse to high,
     // xhigh to max). Qwen models have no documented effort control, so the
@@ -625,7 +667,7 @@ function normalizeBody(buffer, contentType, route) {
     if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
       payload.tool_choice = "auto";
     }
-  } else if (model.requestProfile === "glm-thinking") {
+  } else if (effectiveProfile === "glm-thinking") {
     payload.thinking = { type: "enabled" };
     // Each GLM entry declares exactly the tiers Z.ai documents for it, and the
     // requested effort is clamped onto them. Models whose registry entry offers
@@ -642,14 +684,14 @@ function normalizeBody(buffer, contentType, route) {
     // overrides so the upstream default applies.
     delete payload.temperature;
     delete payload.top_p;
-  } else if (model.requestProfile === "xai-reasoning") {
+  } else if (effectiveProfile === "xai-reasoning") {
     if (!["low", "medium", "high"].includes(payload.reasoning_effort)) {
       payload.reasoning_effort = "high";
     }
     delete payload.presence_penalty;
     delete payload.frequency_penalty;
     delete payload.stop;
-  } else if (model.requestProfile === "anthropic-reasoning") {
+  } else if (effectiveProfile === "anthropic-reasoning") {
     // Anthropic steers adaptive thinking via output_config.effort
     // (low/medium/high/xhigh/max, default high).
     const effort = { minimal: "low", ultra: "max" }[payload.reasoning_effort] ||
@@ -659,7 +701,7 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
     payload.output_config = { effort };
-  } else if (model.requestProfile === "qwen38-community") {
+  } else if (effectiveProfile === "qwen38-community") {
     // The community endpoint's vLLM build validates reasoning_effort against a
     // literal set -- none, minimal, low, medium, high, xhigh, max -- and
     // answers anything else with a 400 naming the whole enum (measured against
@@ -691,12 +733,12 @@ function normalizeBody(buffer, contentType, route) {
     if (Array.isArray(payload.messages)) {
       payload.messages = normalizeQwen38SystemMessages(payload.messages);
     }
-  } else if (model.requestProfile === "minimax-m3") {
+  } else if (effectiveProfile === "minimax-m3") {
     // MiniMax uses its own thinking control on the OpenAI-compatible
     // Chat Completions endpoint instead of reasoning_effort.
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
-  } else if (model.requestProfile === "auto-tool-choice") {
+  } else if (effectiveProfile === "auto-tool-choice") {
     // Some models call tools happily under "auto" but reject being forced to,
     // the way DeepSeek and Qwen do in thinking mode. Their vendor profiles
     // above already handle it; this one exists for a model reached through a
@@ -947,6 +989,25 @@ async function handleRequest(request, response) {
     normalized.endpoint,
   );
   let target = `${session.baseUrl}${route}${requestUrl.search}`;
+
+  // Requirement 5: Final outbound assertion for all NineRouter models
+  if (normalized.provider.id === "nine-router") {
+    let finalBodyObj;
+    try {
+      finalBodyObj = typeof upstreamBody === "string" ? JSON.parse(upstreamBody) : JSON.parse(upstreamBody.toString("utf8"));
+    } catch {}
+    const finalEncryptedCheck = recursiveCountKey(finalBodyObj?.tools, "encrypted");
+    if (finalEncryptedCheck.count > 0) {
+      const err = new Error(
+        `ASSERTION_FAILED: recursiveCountKey(finalOutboundBody.tools, "encrypted") MUST equal 0. Found ${finalEncryptedCheck.count} instances: ` +
+        JSON.stringify(finalEncryptedCheck.paths)
+      );
+      err.status = 500;
+      console.error(`[FATAL_ASSERTION] ${err.message}`);
+      throw err;
+    }
+  }
+
   let upstream = await fetch(target, {
     method: request.method,
     headers: upstreamHeaders(
