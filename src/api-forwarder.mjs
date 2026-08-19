@@ -362,12 +362,22 @@ function sanitizeGeminiImageContent(messages) {
   });
 }
 
+function trimTrailingModelTurns(messages) {
+  const trimmed = [...messages];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1]?.role === "assistant") {
+    trimmed.pop();
+  }
+  return trimmed;
+}
+
 function sanitizeChatToolHistory(messages, provider, model) {
   if (!Array.isArray(messages)) return messages;
   const repaired = ensureToolResultsForCalls(coalesceAssistantMessages(messages));
-  return isGeminiProvider(provider, model)
-    ? ensureGeminiThoughtSignatures(sanitizeGeminiImageContent(repaired))
-    : repaired;
+  if (isGeminiProvider(provider, model)) {
+    const geminiClean = ensureGeminiThoughtSignatures(sanitizeGeminiImageContent(repaired));
+    return trimTrailingModelTurns(geminiClean);
+  }
+  return repaired;
 }
 
 // The Qwen3.8 chat template counts a turn as one of these three roles. Probing
