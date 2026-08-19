@@ -2,7 +2,10 @@
 // ponytail: maps prefix convention (ag, ocg, gcli, qd, etc.) until 9Router exposes upstream model metadata endpoint.
 
 export function resolveNineRouterFamily(upstreamModel = "") {
-  const model = String(upstreamModel || "").toLowerCase();
+  let model = String(upstreamModel || "").toLowerCase();
+  if (model.startsWith("nine-router-")) model = model.slice("nine-router-".length).replace(/-/g, "/");
+  if (model.startsWith("nine-router/")) model = model.slice("nine-router/".length);
+  if (model.startsWith("openai/")) model = model.slice("openai/".length);
   if (model.startsWith("ag/gemini") || model.startsWith("google/") || model.startsWith("gemini-")) {
     return "google";
   }
