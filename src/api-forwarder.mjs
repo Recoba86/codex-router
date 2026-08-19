@@ -290,7 +290,8 @@ const GEMINI_THOUGHT_SIGNATURE_SENTINEL = "skip_thought_signature_validator";
 function isGeminiProvider(provider, model) {
   if (provider?.id === "gemini-api" || provider?.ownedBy === "google") return true;
   if (provider?.id === "nine-router" && resolveNineRouterFamily(model?.upstreamModel) === "google") return true;
-  return false;
+  const target = String(model?.upstreamModel || model?.gatewayModel || model?.model || "").toLowerCase();
+  return target.includes("gemini");
 }
 
 // Both Command Code entries -- the chat-completions catalog and the Messages
